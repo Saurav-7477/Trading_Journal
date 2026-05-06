@@ -2,4 +2,7 @@ streamlit
 pandas
 openpyxl
 plotly
-openpyxl
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
