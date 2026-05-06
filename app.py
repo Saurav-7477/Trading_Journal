@@ -92,8 +92,9 @@ def get_secret_section(section_name):
 
 def get_google_sheet_settings():
     gspread_secrets = get_secret_section("gspread")
+    gcp_service_account = get_secret_section("gcp_service_account")
 
-    credentials_dict = gspread_secrets.get("credentials")
+    credentials_dict = gspread_secrets.get("credentials") or gcp_service_account
     if credentials_dict is None and LOCAL_CREDENTIALS_PATH.exists():
         credentials_dict = str(LOCAL_CREDENTIALS_PATH)
 
