@@ -19,47 +19,63 @@ st.markdown("**Professional Options & Stock Trading Journal**")
 COLUMNS = [
     "Date",
     "Instrument",
-    "Stratergy",
-    "position Size",
+    "Strategy",
+    "Position Size",
     "Entry",
     "Exit",
-    "Expected move",
-    "Stop Loss",
-    "Target",
-    "Did you follow your plan?",
-    "Slippage / late entry / early exit",
-    "Any adjustment made",
-    "Outcome",
-    "Emotion before trade( confident, fearful, FOMO)",
-    "During trade: (panic, patience, overconfidence)",
-    "After trade: (regret, satisfaction)",
-    "What Worked / What Failed",
-    "Improvement",
+    "Exit Type",
+    "Capital Used",
+    "Risk Amount",
+    "P&L",
+    "R-Multiple",
+    "Setup Quality (1-5)",
+    "Execution Score (1-5)",
+    "Followed Plan?",
+    "Mistake Type",
+    "Psychology Note",
+    "Key Learning",
 ]
 
 GROUP_HEADER_ROW = [
-    "Meta Data",
+    "SECTION 1 - Trade Setup",
     "",
     "",
     "",
     "",
     "",
     "",
-    "Risk Management",
-    "",
-    "Execution Quality",
+    "SECTION 2 - Risk & Performance",
     "",
     "",
-    "Outcome",
-    "Psychlogical State",
     "",
     "",
-    "key Learning",
+    "",
+    "SECTION 3 - Discipline & Psychology",
+    "",
+    "",
     "",
 ]
 
+LEGACY_COLUMN_ALIASES = {
+    "Stratergy": "Strategy",
+    "position Size": "Position Size",
+    "Outcome": "P&L",
+    "Did you follow your plan?": "Followed Plan?",
+    "Any adjustment made": "Mistake Type",
+    "Emotion before trade( confident, fearful, FOMO)": "Psychology Note",
+    "What Worked / What Failed": "Key Learning",
+}
+
 NUMERIC_COLUMNS = [
-    "position Size", "Entry", "Exit", "Expected move", "Stop Loss", "Target", "Outcome",
+    "Position Size",
+    "Entry",
+    "Exit",
+    "Capital Used",
+    "Risk Amount",
+    "P&L",
+    "R-Multiple",
+    "Setup Quality (1-5)",
+    "Execution Score (1-5)",
 ]
 
 SCOPES = [
@@ -118,10 +134,11 @@ def get_google_sheet_settings():
 
 def apply_reference_sheet_layout(worksheet):
     try:
+        worksheet.batch_clear(["R1:Z2"])
         worksheet.freeze(rows=2)
-        worksheet.format("A1:R1", {"textFormat": {"bold": True}})
-        worksheet.format("A2:R2", {"textFormat": {"bold": True}})
-        for range_name in ["A1:G1", "H1:I1", "J1:L1", "N1:P1"]:
+        worksheet.format("A1:Q1", {"textFormat": {"bold": True}})
+        worksheet.format("A2:Q2", {"textFormat": {"bold": True}})
+        for range_name in ["A1:G1", "H1:M1", "N1:Q1"]:
             worksheet.merge_cells(range_name)
     except Exception:
         pass
@@ -174,7 +191,7 @@ def ensure_header_row(worksheet, rows=None):
     normalized_header = normalize_row(second_row, len(COLUMNS))
 
     if normalized_group_row != GROUP_HEADER_ROW:
-        worksheet.insert_row(GROUP_HEADER_ROW, index=1)
+        worksheet.update(values=[GROUP_HEADER_ROW], range_name="A1")
         apply_reference_sheet_layout(worksheet)
         rows = worksheet.get_all_values()
         normalized_header = normalize_row(rows[1], len(COLUMNS)) if len(rows) > 1 else []
@@ -240,6 +257,9 @@ def load_trades():
         for row in data_rows:
             padded_row = row + [""] * max(len(header) - len(row), 0)
             record = dict(zip(header, padded_row))
+            for old_column, new_column in LEGACY_COLUMN_ALIASES.items():
+                if not record.get(new_column) and record.get(old_column):
+                    record[new_column] = record[old_column]
             records.append({column: record.get(column, "") for column in COLUMNS})
 
         df = pd.DataFrame(records, columns=COLUMNS)
@@ -263,14 +283,14 @@ def save_trade(trade_dict):
         worksheet.append_row(
             [trade_dict.get(column, "") for column in COLUMNS],
             value_input_option="RAW",
-            table_range="A2:R",
+            table_range="A2:Q",
         )
         load_trades.clear()
         saved_rows = load_trades()
         if len(saved_rows) <= row_count_before:
             st.warning(
                 "Google accepted the save request, but the new row was not found in "
-                "the expected A:R table. Check whether another spreadsheet named "
+                "the expected A:Q table. Check whether another spreadsheet named "
                 "`Trading Journal` is being opened."
             )
     except Exception as e:
@@ -294,62 +314,65 @@ with tab1:
             ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "STOCK", "Other"],
         )
         strategy = st.text_input("Strategy (e.g., Bull Call Spread)")
-        expected_move = st.number_input("Expected move", format="%.2f", value=0.0)
+        pos_size = st.number_input("Position Size", min_value=1, value=1)
 
     with col2:
-        pos_size = st.number_input("position Size", min_value=1, value=1)
         entry = st.number_input("Entry Price", format="%.2f", value=0.0)
         exit_price = st.number_input("Exit Price", format="%.2f", value=0.0)
-        stop_loss = st.number_input("Stop Loss", format="%.2f")
-        target = st.number_input("Target", format="%.2f")
+        exit_type = st.selectbox(
+            "Exit Type",
+            ["Target Hit", "Stop Loss Hit", "Manual Exit", "Trailing Stop", "Time Exit", "Partial Exit"],
+        )
+        risk_amount = st.number_input("Risk Amount", min_value=0.0, format="%.2f", value=0.0)
 
     with col3:
-        outcome_preview = (exit_price - entry) * pos_size * (50 if "NIFTY" in instrument else 1)
-        st.metric("Outcome", f"INR {outcome_preview:,.2f}")
+        multiplier = 50 if "NIFTY" in instrument else 1
+        capital_used = entry * pos_size * multiplier
+        pnl_preview = (exit_price - entry) * pos_size * multiplier
+        r_multiple_preview = pnl_preview / risk_amount if risk_amount else 0
+        st.metric("Capital Used", f"INR {capital_used:,.2f}")
+        st.metric("P&L", f"INR {pnl_preview:,.2f}")
+        st.metric("R-Multiple", f"{r_multiple_preview:.2f}R")
+        st.caption("R-Multiple = P&L / Risk Amount")
 
-    followed = st.radio("Did you follow your plan?", ["Yes", "No", "Partially"])
-    slippage = st.text_area("Slippage / late entry / early exit")
-    adjustment = st.text_area("Any adjustment made")
-
-    emo_before = st.multiselect(
-        "Emotion before trade",
-        ["Confident", "Fearful", "FOMO", "Neutral", "Excited"],
+    setup_quality = st.slider("Setup Quality (1-5)", min_value=1, max_value=5, value=3)
+    execution_score = st.slider("Execution Score (1-5)", min_value=1, max_value=5, value=3)
+    followed = st.radio("Followed Plan?", ["Yes", "No", "Partially"])
+    mistake_type = st.selectbox(
+        "Mistake Type",
+        ["None", "Late Entry", "Early Entry", "Late Exit", "Early Exit", "Oversized", "No Stop", "Moved Stop", "Revenge Trade", "FOMO", "Other"],
     )
-    emo_during = st.multiselect(
-        "During trade",
-        ["Patience", "Panic", "Overconfidence", "Calm"],
-    )
-    emo_after = st.multiselect(
-        "After trade",
-        ["Satisfaction", "Regret", "Neutral", "Frustrated"],
-    )
-
-    learning = st.text_area("What Worked / What Failed")
-    improvement = st.text_area("Improvement")
+    psychology_note = st.text_area("Psychology Note")
+    learning = st.text_area("Key Learning")
 
     if st.button("Save Trade", type="primary", use_container_width=True):
+        if risk_amount <= 0:
+            st.error("Risk Amount must be greater than 0 to calculate R-Multiple.")
+            st.stop()
+
         multiplier = 50 if "NIFTY" in instrument else 1
-        outcome = (exit_price - entry) * pos_size * multiplier
+        capital_used = entry * pos_size * multiplier
+        pnl = (exit_price - entry) * pos_size * multiplier
+        r_multiple = pnl / risk_amount if risk_amount else 0
 
         trade = {
             "Date": str(date),
             "Instrument": instrument,
-            "Stratergy": strategy,
-            "position Size": pos_size,
+            "Strategy": strategy,
+            "Position Size": pos_size,
             "Entry": entry,
             "Exit": exit_price,
-            "Expected move": expected_move,
-            "Stop Loss": stop_loss,
-            "Target": target,
-            "Did you follow your plan?": followed,
-            "Slippage / late entry / early exit": slippage,
-            "Any adjustment made": adjustment,
-            "Outcome": round(outcome, 2),
-            "Emotion before trade( confident, fearful, FOMO)": ", ".join(emo_before),
-            "During trade: (panic, patience, overconfidence)": ", ".join(emo_during),
-            "After trade: (regret, satisfaction)": ", ".join(emo_after),
-            "What Worked / What Failed": learning,
-            "Improvement": improvement,
+            "Exit Type": exit_type,
+            "Capital Used": round(capital_used, 2),
+            "Risk Amount": round(risk_amount, 2),
+            "P&L": round(pnl, 2),
+            "R-Multiple": round(r_multiple, 2),
+            "Setup Quality (1-5)": setup_quality,
+            "Execution Score (1-5)": execution_score,
+            "Followed Plan?": followed,
+            "Mistake Type": mistake_type,
+            "Psychology Note": psychology_note,
+            "Key Learning": learning,
         }
 
         save_trade(trade)
@@ -379,23 +402,23 @@ with tab3:
     if not df.empty:
         col1, col2, col3, col4 = st.columns(4)
         total_trades = len(df)
-        win_rate = len(df[df["Outcome"] > 0]) / total_trades * 100 if total_trades > 0 else 0
-        total_outcome = df["Outcome"].sum()
-        avg_outcome = df["Outcome"].mean()
+        win_rate = len(df[df["P&L"] > 0]) / total_trades * 100 if total_trades > 0 else 0
+        total_pnl = df["P&L"].sum()
+        avg_r_multiple = df["R-Multiple"].mean()
 
         col1.metric("Total Trades", total_trades)
         col2.metric("Win Rate", f"{win_rate:.1f}%")
-        col3.metric("Total Outcome", f"INR {total_outcome:,.0f}", delta=None)
-        col4.metric("Avg Outcome", f"INR {avg_outcome:,.0f}")
+        col3.metric("Total P&L", f"INR {total_pnl:,.0f}", delta=None)
+        col4.metric("Avg R-Multiple", f"{avg_r_multiple:.2f}R")
 
         df_sorted = df.sort_values("Date")
-        df_sorted["Cumulative Outcome"] = df_sorted["Outcome"].cumsum()
+        df_sorted["Cumulative P&L"] = df_sorted["P&L"].cumsum()
 
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
                 x=df_sorted["Date"],
-                y=df_sorted["Cumulative Outcome"],
+                y=df_sorted["Cumulative P&L"],
                 mode="lines+markers",
                 name="Equity Curve",
             )
@@ -403,23 +426,19 @@ with tab3:
         fig.update_layout(title="Equity Curve", height=400)
         st.plotly_chart(fig, use_container_width=True)
 
-        strategy_perf = df.groupby("Stratergy").agg(
-            Trades=("Outcome", "count"),
-            WinRate=("Outcome", lambda x: (x > 0).mean() * 100),
-            AvgOutcome=("Outcome", "mean"),
+        strategy_perf = df.groupby("Strategy").agg(
+            Trades=("P&L", "count"),
+            WinRate=("P&L", lambda x: (x > 0).mean() * 100),
+            AvgR=("R-Multiple", "mean"),
         ).round(2)
         st.plotly_chart(
             px.bar(strategy_perf, y="WinRate", title="Win Rate by Strategy"),
             use_container_width=True,
         )
 
-        st.subheader("Psychology Impact")
-        emo_df = df.copy()
-        emotion_column = "Emotion before trade( confident, fearful, FOMO)"
-        emo_df[emotion_column] = emo_df[emotion_column].str.split(", ")
-        emo_exploded = emo_df.explode(emotion_column)
-        emo_perf = emo_exploded.groupby(emotion_column)["Outcome"].agg(["count", "mean"]).round(2)
-        st.dataframe(emo_perf)
+        st.subheader("Discipline Impact")
+        discipline_perf = df.groupby("Followed Plan?")["R-Multiple"].agg(["count", "mean"]).round(2)
+        st.dataframe(discipline_perf)
     else:
         st.warning("Add some trades to see analytics!")
 
