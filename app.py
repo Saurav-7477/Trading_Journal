@@ -13,6 +13,36 @@ from pathlib import Path
 st.set_page_config(page_title="Velocity Trading Journal", layout="wide")
 st.title("Velocity Trading Journal")
 st.markdown("**Professional Options & Stock Trading Journal**")
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 1.6rem;
+        padding-bottom: 3rem;
+        max-width: 1320px;
+    }
+    div[data-testid="stMetric"] {
+        background: linear-gradient(180deg, #171b22 0%, #101319 100%);
+        border: 1px solid #2a303a;
+        border-radius: 8px;
+        padding: 16px 18px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+    }
+    div[data-testid="stMetricLabel"] {
+        color: #aab2c0;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.7rem;
+    }
+    .section-note {
+        color: #aab2c0;
+        margin-top: -0.35rem;
+        margin-bottom: 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ===================== HEADERS =====================
@@ -76,6 +106,22 @@ NUMERIC_COLUMNS = [
     "R-Multiple",
     "Setup Quality (1-5)",
     "Execution Score (1-5)",
+]
+
+PLAN_VALUES = ["Yes", "No", "Partially"]
+EXIT_TYPES = ["Target Hit", "Stop Loss Hit", "Manual Exit", "Trailing Stop", "Time Exit", "Partial Exit"]
+MISTAKE_TYPES = [
+    "None",
+    "Late Entry",
+    "Early Entry",
+    "Late Exit",
+    "Early Exit",
+    "Oversized",
+    "No Stop",
+    "Moved Stop",
+    "Revenge Trade",
+    "FOMO",
+    "Other",
 ]
 
 SCOPES = [
@@ -243,7 +289,6 @@ def ensure_header_row(worksheet, rows=None):
     return COLUMNS if use_expected_columns else normalized_header, rows[2:]
 
 
-@st.cache_data(ttl=300)
 def load_trades():
     try:
         worksheet = get_google_worksheet()
@@ -263,9 +308,12 @@ def load_trades():
             records.append({column: record.get(column, "") for column in COLUMNS})
 
         df = pd.DataFrame(records, columns=COLUMNS)
+        text_columns = [column for column in COLUMNS if column not in NUMERIC_COLUMNS]
+        for column in text_columns:
+            df[column] = df[column].astype(str).str.strip()
         for column in NUMERIC_COLUMNS:
             df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0)
-        return df
+        return df[~df.replace("", pd.NA).isna().all(axis=1)]
     except Exception as e:
         show_sheet_error(
             "Failed to load trades from Google Sheets. The app now avoids "
@@ -285,7 +333,6 @@ def save_trade(trade_dict):
             value_input_option="RAW",
             table_range="A2:Q",
         )
-        load_trades.clear()
         saved_rows = load_trades()
         if len(saved_rows) <= row_count_before:
             st.warning(
@@ -295,6 +342,35 @@ def save_trade(trade_dict):
             )
     except Exception as e:
         show_sheet_error("Failed to save trade to Google Sheets.", e)
+
+
+def get_analytics_df(df):
+    if df.empty:
+        return df.copy()
+
+    analytics_df = df.copy()
+    analytics_df = analytics_df[analytics_df["Followed Plan?"].isin(PLAN_VALUES)]
+    analytics_df = analytics_df[analytics_df["Risk Amount"] > 0]
+    analytics_df = analytics_df[analytics_df["Strategy"].astype(str).str.strip() != ""]
+    return analytics_df
+
+
+def format_inr(value):
+    return f"INR {value:,.0f}"
+
+
+def profit_factor(df):
+    gross_profit = df.loc[df["P&L"] > 0, "P&L"].sum()
+    gross_loss = abs(df.loc[df["P&L"] < 0, "P&L"].sum())
+    return gross_profit / gross_loss if gross_loss else 0
+
+
+def max_drawdown(pnl_series):
+    if pnl_series.empty:
+        return 0
+    equity = pnl_series.cumsum()
+    drawdown = equity - equity.cummax()
+    return drawdown.min()
 
 
 # ===================== UI =====================
@@ -321,7 +397,7 @@ with tab1:
         exit_price = st.number_input("Exit Price", format="%.2f", value=0.0)
         exit_type = st.selectbox(
             "Exit Type",
-            ["Target Hit", "Stop Loss Hit", "Manual Exit", "Trailing Stop", "Time Exit", "Partial Exit"],
+            EXIT_TYPES,
         )
         risk_amount = st.number_input("Risk Amount", min_value=0.0, format="%.2f", value=0.0)
 
@@ -337,10 +413,10 @@ with tab1:
 
     setup_quality = st.slider("Setup Quality (1-5)", min_value=1, max_value=5, value=3)
     execution_score = st.slider("Execution Score (1-5)", min_value=1, max_value=5, value=3)
-    followed = st.radio("Followed Plan?", ["Yes", "No", "Partially"])
+    followed = st.radio("Followed Plan?", PLAN_VALUES)
     mistake_type = st.selectbox(
         "Mistake Type",
-        ["None", "Late Entry", "Early Entry", "Late Exit", "Early Exit", "Oversized", "No Stop", "Moved Stop", "Revenge Trade", "FOMO", "Other"],
+        MISTAKE_TYPES,
     )
     psychology_note = st.text_area("Psychology Note")
     learning = st.text_area("Key Learning")
@@ -383,10 +459,15 @@ with tab1:
 # ------------------- TAB 2: Trade History -------------------
 with tab2:
     st.header("Trade History")
+    if st.button("Refresh from Google Sheets", key="refresh_history"):
+        st.rerun()
     df = load_trades()
 
     if not df.empty:
-        st.dataframe(df.sort_values("Date", ascending=False), use_container_width=True, height=600)
+        history_df = df.copy()
+        history_df["_DateSort"] = pd.to_datetime(history_df["Date"], errors="coerce")
+        history_df = history_df.sort_values("_DateSort", ascending=False).drop(columns=["_DateSort"])
+        st.dataframe(history_df, use_container_width=True, height=600)
 
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button("Download as CSV", csv, "trading_journal.csv", "text/csv")
@@ -397,48 +478,187 @@ with tab2:
 # ------------------- TAB 3: Analytics -------------------
 with tab3:
     st.header("Performance Analytics")
+    st.markdown(
+        '<p class="section-note">Freshly fetched from Google Sheets on every rerun. '
+        'Analytics use only rows that match the current journal structure.</p>',
+        unsafe_allow_html=True,
+    )
+    if st.button("Refresh analytics", key="refresh_analytics"):
+        st.rerun()
     df = load_trades()
+    analytics_df = get_analytics_df(df)
 
-    if not df.empty:
-        col1, col2, col3, col4 = st.columns(4)
-        total_trades = len(df)
-        win_rate = len(df[df["P&L"] > 0]) / total_trades * 100 if total_trades > 0 else 0
-        total_pnl = df["P&L"].sum()
-        avg_r_multiple = df["R-Multiple"].mean()
+    if not analytics_df.empty:
+        total_trades = len(analytics_df)
+        wins = analytics_df[analytics_df["P&L"] > 0]
+        losses = analytics_df[analytics_df["P&L"] < 0]
+        win_rate = len(wins) / total_trades * 100 if total_trades > 0 else 0
+        total_pnl = analytics_df["P&L"].sum()
+        avg_r_multiple = analytics_df["R-Multiple"].mean()
+        expectancy = analytics_df["R-Multiple"].mean()
+        pf = profit_factor(analytics_df)
+        drawdown = max_drawdown(analytics_df["P&L"])
+        best_r = analytics_df["R-Multiple"].max()
+        worst_r = analytics_df["R-Multiple"].min()
 
-        col1.metric("Total Trades", total_trades)
-        col2.metric("Win Rate", f"{win_rate:.1f}%")
-        col3.metric("Total P&L", f"INR {total_pnl:,.0f}", delta=None)
-        col4.metric("Avg R-Multiple", f"{avg_r_multiple:.2f}R")
+        metric_row_1 = st.columns(4)
+        metric_row_1[0].metric("Total Trades", total_trades)
+        metric_row_1[1].metric("Win Rate", f"{win_rate:.1f}%")
+        metric_row_1[2].metric("Total P&L", format_inr(total_pnl))
+        metric_row_1[3].metric("Avg R-Multiple", f"{avg_r_multiple:.2f}R")
 
-        df_sorted = df.sort_values("Date")
-        df_sorted["Cumulative P&L"] = df_sorted["P&L"].cumsum()
+        metric_row_2 = st.columns(4)
+        metric_row_2[0].metric("Expectancy", f"{expectancy:.2f}R")
+        metric_row_2[1].metric("Profit Factor", f"{pf:.2f}" if pf else "N/A")
+        metric_row_2[2].metric("Max Drawdown", format_inr(drawdown))
+        metric_row_2[3].metric("Best / Worst R", f"{best_r:.2f}R / {worst_r:.2f}R")
 
-        fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=df_sorted["Date"],
-                y=df_sorted["Cumulative P&L"],
-                mode="lines+markers",
-                name="Equity Curve",
+        analytics_df = analytics_df.copy()
+        analytics_df["Trade Date"] = pd.to_datetime(analytics_df["Date"], errors="coerce")
+        analytics_df = analytics_df.sort_values(["Trade Date", "Date"], na_position="last")
+        analytics_df["Trade #"] = range(1, len(analytics_df) + 1)
+        analytics_df["Cumulative P&L"] = analytics_df["P&L"].cumsum()
+        analytics_df["Abs R"] = analytics_df["R-Multiple"].abs().clip(lower=0.2)
+
+        left, right = st.columns([1.35, 1])
+        with left:
+            equity_fig = go.Figure()
+            equity_fig.add_trace(
+                go.Scatter(
+                    x=analytics_df["Trade #"],
+                    y=analytics_df["Cumulative P&L"],
+                    mode="lines+markers",
+                    fill="tozeroy",
+                    name="Cumulative P&L",
+                    line=dict(color="#22c55e", width=3),
+                    marker=dict(size=7),
+                )
             )
-        )
-        fig.update_layout(title="Equity Curve", height=400)
-        st.plotly_chart(fig, use_container_width=True)
+            equity_fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="#64748b")
+            equity_fig.update_layout(
+                title="Equity Curve",
+                height=430,
+                template="plotly_dark",
+                margin=dict(l=20, r=20, t=55, b=30),
+                xaxis_title="Trade #",
+                yaxis_title="Cumulative P&L",
+            )
+            st.plotly_chart(equity_fig, use_container_width=True)
 
-        strategy_perf = df.groupby("Strategy").agg(
+        with right:
+            r_fig = px.histogram(
+                analytics_df,
+                x="R-Multiple",
+                nbins=18,
+                title="R-Multiple Distribution",
+                color_discrete_sequence=["#38bdf8"],
+                template="plotly_dark",
+            )
+            r_fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="#f87171")
+            r_fig.update_layout(height=430, margin=dict(l=20, r=20, t=55, b=30))
+            st.plotly_chart(r_fig, use_container_width=True)
+
+        strategy_perf = analytics_df.groupby("Strategy", as_index=False).agg(
             Trades=("P&L", "count"),
             WinRate=("P&L", lambda x: (x > 0).mean() * 100),
             AvgR=("R-Multiple", "mean"),
-        ).round(2)
-        st.plotly_chart(
-            px.bar(strategy_perf, y="WinRate", title="Win Rate by Strategy"),
-            use_container_width=True,
+            TotalPnL=("P&L", "sum"),
         )
+        strategy_perf = strategy_perf.sort_values("TotalPnL", ascending=False)
 
-        st.subheader("Discipline Impact")
-        discipline_perf = df.groupby("Followed Plan?")["R-Multiple"].agg(["count", "mean"]).round(2)
-        st.dataframe(discipline_perf)
+        discipline_perf = analytics_df.groupby("Followed Plan?", as_index=False).agg(
+            Trades=("R-Multiple", "count"),
+            AvgR=("R-Multiple", "mean"),
+            TotalPnL=("P&L", "sum"),
+        )
+        discipline_perf["Followed Plan?"] = pd.Categorical(
+            discipline_perf["Followed Plan?"],
+            categories=PLAN_VALUES,
+            ordered=True,
+        )
+        discipline_perf = discipline_perf.sort_values("Followed Plan?")
+
+        chart_col_1, chart_col_2 = st.columns(2)
+        with chart_col_1:
+            strategy_fig = px.bar(
+                strategy_perf,
+                x="Strategy",
+                y="TotalPnL",
+                color="AvgR",
+                hover_data=["Trades", "WinRate", "AvgR"],
+                title="Strategy Contribution",
+                color_continuous_scale="RdYlGn",
+                template="plotly_dark",
+            )
+            strategy_fig.update_layout(height=390, margin=dict(l=20, r=20, t=55, b=70))
+            st.plotly_chart(strategy_fig, use_container_width=True)
+
+        with chart_col_2:
+            discipline_fig = px.bar(
+                discipline_perf,
+                x="Followed Plan?",
+                y="AvgR",
+                color="TotalPnL",
+                hover_data=["Trades", "TotalPnL"],
+                title="Discipline Impact",
+                color_continuous_scale="RdYlGn",
+                template="plotly_dark",
+            )
+            discipline_fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="#64748b")
+            discipline_fig.update_layout(height=390, margin=dict(l=20, r=20, t=55, b=50))
+            st.plotly_chart(discipline_fig, use_container_width=True)
+
+        quality_col, mistakes_col = st.columns(2)
+        with quality_col:
+            quality_fig = px.scatter(
+                analytics_df,
+                x="Setup Quality (1-5)",
+                y="Execution Score (1-5)",
+                size="Abs R",
+                color="R-Multiple",
+                hover_data=["Strategy", "P&L", "Mistake Type"],
+                title="Setup Quality vs Execution",
+                color_continuous_scale="RdYlGn",
+                template="plotly_dark",
+            )
+            quality_fig.update_layout(height=390, margin=dict(l=20, r=20, t=55, b=40))
+            st.plotly_chart(quality_fig, use_container_width=True)
+
+        with mistakes_col:
+            mistake_perf = analytics_df.groupby("Mistake Type", as_index=False).agg(
+                Trades=("R-Multiple", "count"),
+                AvgR=("R-Multiple", "mean"),
+            )
+            mistake_perf = mistake_perf[mistake_perf["Mistake Type"].astype(str).str.strip() != ""]
+            mistake_perf = mistake_perf.sort_values("AvgR")
+            mistake_fig = px.bar(
+                mistake_perf,
+                x="AvgR",
+                y="Mistake Type",
+                orientation="h",
+                color="AvgR",
+                hover_data=["Trades"],
+                title="Mistake Cost in R",
+                color_continuous_scale="RdYlGn",
+                template="plotly_dark",
+            )
+            mistake_fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="#64748b")
+            mistake_fig.update_layout(height=390, margin=dict(l=20, r=20, t=55, b=40))
+            st.plotly_chart(mistake_fig, use_container_width=True)
+
+        st.subheader("Clean Discipline Summary")
+        st.dataframe(
+            discipline_perf.rename(
+                columns={"AvgR": "Avg R-Multiple", "TotalPnL": "Total P&L"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    elif not df.empty:
+        st.warning(
+            "No current-structure trades are available for analytics yet. Add a new trade "
+            "with Risk Amount and Followed Plan filled in, or clean old rows in Google Sheets."
+        )
     else:
         st.warning("Add some trades to see analytics!")
 
