@@ -19,7 +19,7 @@ st.markdown(
     .block-container {
         padding-top: 1.6rem;
         padding-bottom: 3rem;
-        max-width: 1320px;
+        max-width: 1680px;
     }
     div[data-testid="stMetric"] {
         background: linear-gradient(180deg, #171b22 0%, #101319 100%);
@@ -38,6 +38,10 @@ st.markdown(
         color: #aab2c0;
         margin-top: -0.35rem;
         margin-bottom: 1rem;
+    }
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #2a303a;
+        border-radius: 8px;
     }
     </style>
     """,
@@ -305,7 +309,9 @@ def load_trades():
             for old_column, new_column in LEGACY_COLUMN_ALIASES.items():
                 if not record.get(new_column) and record.get(old_column):
                     record[new_column] = record[old_column]
-            records.append({column: record.get(column, "") for column in COLUMNS})
+            cleaned_record = {column: str(record.get(column, "")).strip() for column in COLUMNS}
+            if any(value for value in cleaned_record.values()):
+                records.append(cleaned_record)
 
         df = pd.DataFrame(records, columns=COLUMNS)
         text_columns = [column for column in COLUMNS if column not in NUMERIC_COLUMNS]
@@ -313,7 +319,13 @@ def load_trades():
             df[column] = df[column].astype(str).str.strip()
         for column in NUMERIC_COLUMNS:
             df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0)
-        return df[~df.replace("", pd.NA).isna().all(axis=1)]
+        has_identity = (
+            df["Date"].astype(str).str.strip().ne("")
+            | df["Instrument"].astype(str).str.strip().ne("")
+            | df["Strategy"].astype(str).str.strip().ne("")
+        )
+        has_trade_values = df[["Entry", "Exit", "Capital Used", "Risk Amount", "P&L"]].abs().sum(axis=1) > 0
+        return df[has_identity | has_trade_values].reset_index(drop=True)
     except Exception as e:
         show_sheet_error(
             "Failed to load trades from Google Sheets. The app now avoids "
@@ -467,7 +479,32 @@ with tab2:
         history_df = df.copy()
         history_df["_DateSort"] = pd.to_datetime(history_df["Date"], errors="coerce")
         history_df = history_df.sort_values("_DateSort", ascending=False).drop(columns=["_DateSort"])
-        st.dataframe(history_df, use_container_width=True, height=600)
+        st.caption(f"Showing {len(history_df)} trade row{'s' if len(history_df) != 1 else ''} from Google Sheets.")
+        st.dataframe(
+            history_df,
+            use_container_width=True,
+            height=min(760, 120 + len(history_df) * 44),
+            hide_index=True,
+            column_config={
+                "Date": st.column_config.TextColumn("Date", width="medium"),
+                "Instrument": st.column_config.TextColumn("Instrument", width="medium"),
+                "Strategy": st.column_config.TextColumn("Strategy", width="large"),
+                "Position Size": st.column_config.NumberColumn("Position Size", width="medium"),
+                "Entry": st.column_config.NumberColumn("Entry", width="small", format="%.2f"),
+                "Exit": st.column_config.NumberColumn("Exit", width="small", format="%.2f"),
+                "Exit Type": st.column_config.TextColumn("Exit Type", width="large"),
+                "Capital Used": st.column_config.NumberColumn("Capital Used", width="medium", format="%.2f"),
+                "Risk Amount": st.column_config.NumberColumn("Risk Amount", width="medium", format="%.2f"),
+                "P&L": st.column_config.NumberColumn("P&L", width="medium", format="%.2f"),
+                "R-Multiple": st.column_config.NumberColumn("R-Multiple", width="medium", format="%.2f"),
+                "Setup Quality (1-5)": st.column_config.NumberColumn("Setup Quality", width="medium"),
+                "Execution Score (1-5)": st.column_config.NumberColumn("Execution Score", width="medium"),
+                "Followed Plan?": st.column_config.TextColumn("Followed Plan?", width="medium"),
+                "Mistake Type": st.column_config.TextColumn("Mistake Type", width="large"),
+                "Psychology Note": st.column_config.TextColumn("Psychology Note", width="large"),
+                "Key Learning": st.column_config.TextColumn("Key Learning", width="large"),
+            },
+        )
 
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button("Download as CSV", csv, "trading_journal.csv", "text/csv")
