@@ -58,8 +58,7 @@ COLUMNS = [
     "Entry",
     "Exit",
     "Exit Type",
-    "Capital Used",
-    "Risk Amount",
+    "SL Price",
     "P&L",
     "R-Multiple",
     "Setup Quality (1-5)",
@@ -79,7 +78,6 @@ GROUP_HEADER_ROW = [
     "",
     "",
     "SECTION 2 - Risk & Performance",
-    "",
     "",
     "",
     "",
@@ -104,8 +102,7 @@ NUMERIC_COLUMNS = [
     "Position Size",
     "Entry",
     "Exit",
-    "Capital Used",
-    "Risk Amount",
+    "SL Price",
     "P&L",
     "R-Multiple",
     "Setup Quality (1-5)",
@@ -184,11 +181,11 @@ def get_google_sheet_settings():
 
 def apply_reference_sheet_layout(worksheet):
     try:
-        worksheet.batch_clear(["R1:Z2"])
+        worksheet.batch_clear(["Q1:Z2"])
         worksheet.freeze(rows=2)
-        worksheet.format("A1:Q1", {"textFormat": {"bold": True}})
-        worksheet.format("A2:Q2", {"textFormat": {"bold": True}})
-        for range_name in ["A1:G1", "H1:M1", "N1:Q1"]:
+        worksheet.format("A1:P1", {"textFormat": {"bold": True}})
+        worksheet.format("A2:P2", {"textFormat": {"bold": True}})
+        for range_name in ["A1:G1", "H1:L1", "M1:P1"]:
             worksheet.merge_cells(range_name)
     except Exception:
         pass
@@ -324,7 +321,7 @@ def load_trades():
             | df["Instrument"].astype(str).str.strip().ne("")
             | df["Strategy"].astype(str).str.strip().ne("")
         )
-        has_trade_values = df[["Entry", "Exit", "Capital Used", "Risk Amount", "P&L"]].abs().sum(axis=1) > 0
+        has_trade_values = df[["Entry", "Exit", "SL Price", "P&L"]].abs().sum(axis=1) > 0
         return df[has_identity | has_trade_values].reset_index(drop=True)
     except Exception as e:
         show_sheet_error(
@@ -343,13 +340,13 @@ def save_trade(trade_dict):
         worksheet.append_row(
             [trade_dict.get(column, "") for column in COLUMNS],
             value_input_option="RAW",
-            table_range="A2:Q",
+            table_range="A2:P",
         )
         saved_rows = load_trades()
         if len(saved_rows) <= row_count_before:
             st.warning(
                 "Google accepted the save request, but the new row was not found in "
-                "the expected A:Q table. Check whether another spreadsheet named "
+                "the expected A:P table. Check whether another spreadsheet named "
                 "`Trading Journal` is being opened."
             )
     except Exception as e:
@@ -362,31 +359,20 @@ def get_analytics_df(df):
 
     analytics_df = df.copy()
     analytics_df = analytics_df[analytics_df["Followed Plan?"].isin(PLAN_VALUES)]
-    analytics_df = analytics_df[analytics_df["Risk Amount"] > 0]
+    analytics_df = analytics_df[analytics_df["SL Price"] > 0]
     analytics_df = analytics_df[analytics_df["Strategy"].astype(str).str.strip() != ""]
     return analytics_df
 
 
-def format_inr(value):
-    return f"INR {value:,.0f}"
-
-
-def profit_factor(df):
-    gross_profit = df.loc[df["P&L"] > 0, "P&L"].sum()
-    gross_loss = abs(df.loc[df["P&L"] < 0, "P&L"].sum())
-    return gross_profit / gross_loss if gross_loss else 0
-
-
-def max_drawdown(pnl_series):
-    if pnl_series.empty:
+def process_score(df):
+    if df.empty:
         return 0
-    equity = pnl_series.cumsum()
-    drawdown = equity - equity.cummax()
-    return drawdown.min()
+    plan_component = df["Followed Plan?"].map({"Yes": 5, "Partially": 3, "No": 1}).fillna(0)
+    return ((plan_component + df["Setup Quality (1-5)"] + df["Execution Score (1-5)"]) / 3).mean()
 
 
 # ===================== UI =====================
-tab1, tab2, tab3 = st.tabs(["New Trade", "Trade History", "Analytics"])
+tab1, tab2, tab3 = st.tabs(["New Trade", "Trade History", "Discipline Analytics"])
 
 
 # ------------------- TAB 1: New Trade -------------------
@@ -411,17 +397,7 @@ with tab1:
             "Exit Type",
             EXIT_TYPES,
         )
-        risk_amount = st.number_input("Risk Amount", min_value=0.0, format="%.2f", value=0.0)
-
-    with col3:
-        multiplier = 50 if "NIFTY" in instrument else 1
-        capital_used = entry * pos_size * multiplier
-        pnl_preview = (exit_price - entry) * pos_size * multiplier
-        r_multiple_preview = pnl_preview / risk_amount if risk_amount else 0
-        st.metric("Capital Used", f"INR {capital_used:,.2f}")
-        st.metric("P&L", f"INR {pnl_preview:,.2f}")
-        st.metric("R-Multiple", f"{r_multiple_preview:.2f}R")
-        st.caption("R-Multiple = P&L / Risk Amount")
+        sl_price = st.number_input("SL Price", min_value=0.0, format="%.2f", value=0.0)
 
     setup_quality = st.slider("Setup Quality (1-5)", min_value=1, max_value=5, value=3)
     execution_score = st.slider("Execution Score (1-5)", min_value=1, max_value=5, value=3)
@@ -433,13 +409,25 @@ with tab1:
     psychology_note = st.text_area("Psychology Note")
     learning = st.text_area("Key Learning")
 
+    with col3:
+        multiplier = 50 if "NIFTY" in instrument else 1
+        risk_amount = abs(entry - sl_price) * pos_size * multiplier
+        pnl_preview = (exit_price - entry) * pos_size * multiplier
+        r_multiple_preview = pnl_preview / risk_amount if risk_amount else 0
+        plan_score = {"Yes": 5, "Partially": 3, "No": 1}[followed]
+        current_process_score = (plan_score + setup_quality + execution_score) / 3
+        st.metric("Risk From SL", f"{risk_amount:,.2f}")
+        st.metric("R-Multiple", f"{r_multiple_preview:.2f}R")
+        st.metric("Process Score", f"{current_process_score:.2f}/5")
+        st.caption("Risk = |Entry - SL Price| x position size. R-Multiple = P&L / risk.")
+
     if st.button("Save Trade", type="primary", use_container_width=True):
+        multiplier = 50 if "NIFTY" in instrument else 1
+        risk_amount = abs(entry - sl_price) * pos_size * multiplier
         if risk_amount <= 0:
-            st.error("Risk Amount must be greater than 0 to calculate R-Multiple.")
+            st.error("SL Price must create a non-zero risk distance from Entry to calculate R-Multiple.")
             st.stop()
 
-        multiplier = 50 if "NIFTY" in instrument else 1
-        capital_used = entry * pos_size * multiplier
         pnl = (exit_price - entry) * pos_size * multiplier
         r_multiple = pnl / risk_amount if risk_amount else 0
 
@@ -451,8 +439,7 @@ with tab1:
             "Entry": entry,
             "Exit": exit_price,
             "Exit Type": exit_type,
-            "Capital Used": round(capital_used, 2),
-            "Risk Amount": round(risk_amount, 2),
+            "SL Price": round(sl_price, 2),
             "P&L": round(pnl, 2),
             "R-Multiple": round(r_multiple, 2),
             "Setup Quality (1-5)": setup_quality,
@@ -493,8 +480,7 @@ with tab2:
                 "Entry": st.column_config.NumberColumn("Entry", width="small", format="%.2f"),
                 "Exit": st.column_config.NumberColumn("Exit", width="small", format="%.2f"),
                 "Exit Type": st.column_config.TextColumn("Exit Type", width="large"),
-                "Capital Used": st.column_config.NumberColumn("Capital Used", width="medium", format="%.2f"),
-                "Risk Amount": st.column_config.NumberColumn("Risk Amount", width="medium", format="%.2f"),
+                "SL Price": st.column_config.NumberColumn("SL Price", width="medium", format="%.2f"),
                 "P&L": st.column_config.NumberColumn("P&L", width="medium", format="%.2f"),
                 "R-Multiple": st.column_config.NumberColumn("R-Multiple", width="medium", format="%.2f"),
                 "Setup Quality (1-5)": st.column_config.NumberColumn("Setup Quality", width="medium"),
@@ -514,10 +500,10 @@ with tab2:
 
 # ------------------- TAB 3: Analytics -------------------
 with tab3:
-    st.header("Performance Analytics")
+    st.header("Discipline Analytics")
     st.markdown(
         '<p class="section-note">Freshly fetched from Google Sheets on every rerun. '
-        'Analytics use only rows that match the current journal structure.</p>',
+        'The dashboard prioritizes process quality, discipline, and R-based thinking over rupee totals.</p>',
         unsafe_allow_html=True,
     )
     if st.button("Refresh analytics", key="refresh_analytics"):
@@ -528,33 +514,38 @@ with tab3:
     if not analytics_df.empty:
         total_trades = len(analytics_df)
         wins = analytics_df[analytics_df["P&L"] > 0]
-        losses = analytics_df[analytics_df["P&L"] < 0]
         win_rate = len(wins) / total_trades * 100 if total_trades > 0 else 0
-        total_pnl = analytics_df["P&L"].sum()
         avg_r_multiple = analytics_df["R-Multiple"].mean()
-        expectancy = analytics_df["R-Multiple"].mean()
-        pf = profit_factor(analytics_df)
-        drawdown = max_drawdown(analytics_df["P&L"])
+        adherence_rate = (analytics_df["Followed Plan?"] == "Yes").mean() * 100
+        mistake_free_rate = (analytics_df["Mistake Type"] == "None").mean() * 100
+        avg_setup = analytics_df["Setup Quality (1-5)"].mean()
+        avg_execution = analytics_df["Execution Score (1-5)"].mean()
+        avg_process = process_score(analytics_df)
         best_r = analytics_df["R-Multiple"].max()
         worst_r = analytics_df["R-Multiple"].min()
 
         metric_row_1 = st.columns(4)
         metric_row_1[0].metric("Total Trades", total_trades)
-        metric_row_1[1].metric("Win Rate", f"{win_rate:.1f}%")
-        metric_row_1[2].metric("Total P&L", format_inr(total_pnl))
+        metric_row_1[1].metric("Plan Adherence", f"{adherence_rate:.1f}%")
+        metric_row_1[2].metric("Process Score", f"{avg_process:.2f}/5")
         metric_row_1[3].metric("Avg R-Multiple", f"{avg_r_multiple:.2f}R")
 
         metric_row_2 = st.columns(4)
-        metric_row_2[0].metric("Expectancy", f"{expectancy:.2f}R")
-        metric_row_2[1].metric("Profit Factor", f"{pf:.2f}" if pf else "N/A")
-        metric_row_2[2].metric("Max Drawdown", format_inr(drawdown))
+        metric_row_2[0].metric("Mistake-Free Rate", f"{mistake_free_rate:.1f}%")
+        metric_row_2[1].metric("Avg Setup Quality", f"{avg_setup:.2f}/5")
+        metric_row_2[2].metric("Avg Execution", f"{avg_execution:.2f}/5")
         metric_row_2[3].metric("Best / Worst R", f"{best_r:.2f}R / {worst_r:.2f}R")
 
         analytics_df = analytics_df.copy()
         analytics_df["Trade Date"] = pd.to_datetime(analytics_df["Date"], errors="coerce")
         analytics_df = analytics_df.sort_values(["Trade Date", "Date"], na_position="last")
         analytics_df["Trade #"] = range(1, len(analytics_df) + 1)
-        analytics_df["Cumulative P&L"] = analytics_df["P&L"].cumsum()
+        analytics_df["Cumulative R"] = analytics_df["R-Multiple"].cumsum()
+        analytics_df["Process Score"] = (
+            analytics_df["Followed Plan?"].map({"Yes": 5, "Partially": 3, "No": 1}).fillna(0)
+            + analytics_df["Setup Quality (1-5)"]
+            + analytics_df["Execution Score (1-5)"]
+        ) / 3
         analytics_df["Abs R"] = analytics_df["R-Multiple"].abs().clip(lower=0.2)
 
         left, right = st.columns([1.35, 1])
@@ -563,22 +554,22 @@ with tab3:
             equity_fig.add_trace(
                 go.Scatter(
                     x=analytics_df["Trade #"],
-                    y=analytics_df["Cumulative P&L"],
+                    y=analytics_df["Cumulative R"],
                     mode="lines+markers",
                     fill="tozeroy",
-                    name="Cumulative P&L",
+                    name="Cumulative R",
                     line=dict(color="#22c55e", width=3),
                     marker=dict(size=7),
                 )
             )
             equity_fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="#64748b")
             equity_fig.update_layout(
-                title="Equity Curve",
+                title="Cumulative R Curve",
                 height=430,
                 template="plotly_dark",
                 margin=dict(l=20, r=20, t=55, b=30),
                 xaxis_title="Trade #",
-                yaxis_title="Cumulative P&L",
+                yaxis_title="Cumulative R",
             )
             st.plotly_chart(equity_fig, use_container_width=True)
 
@@ -599,14 +590,14 @@ with tab3:
             Trades=("P&L", "count"),
             WinRate=("P&L", lambda x: (x > 0).mean() * 100),
             AvgR=("R-Multiple", "mean"),
-            TotalPnL=("P&L", "sum"),
+            ProcessScore=("Process Score", "mean"),
         )
-        strategy_perf = strategy_perf.sort_values("TotalPnL", ascending=False)
+        strategy_perf = strategy_perf.sort_values("ProcessScore", ascending=False)
 
         discipline_perf = analytics_df.groupby("Followed Plan?", as_index=False).agg(
             Trades=("R-Multiple", "count"),
             AvgR=("R-Multiple", "mean"),
-            TotalPnL=("P&L", "sum"),
+            ProcessScore=("Process Score", "mean"),
         )
         discipline_perf["Followed Plan?"] = pd.Categorical(
             discipline_perf["Followed Plan?"],
@@ -620,10 +611,10 @@ with tab3:
             strategy_fig = px.bar(
                 strategy_perf,
                 x="Strategy",
-                y="TotalPnL",
+                y="ProcessScore",
                 color="AvgR",
                 hover_data=["Trades", "WinRate", "AvgR"],
-                title="Strategy Contribution",
+                title="Strategy Process Quality",
                 color_continuous_scale="RdYlGn",
                 template="plotly_dark",
             )
@@ -635,8 +626,8 @@ with tab3:
                 discipline_perf,
                 x="Followed Plan?",
                 y="AvgR",
-                color="TotalPnL",
-                hover_data=["Trades", "TotalPnL"],
+                color="ProcessScore",
+                hover_data=["Trades", "ProcessScore"],
                 title="Discipline Impact",
                 color_continuous_scale="RdYlGn",
                 template="plotly_dark",
@@ -653,7 +644,7 @@ with tab3:
                 y="Execution Score (1-5)",
                 size="Abs R",
                 color="R-Multiple",
-                hover_data=["Strategy", "P&L", "Mistake Type"],
+                hover_data=["Strategy", "Mistake Type", "Followed Plan?"],
                 title="Setup Quality vs Execution",
                 color_continuous_scale="RdYlGn",
                 template="plotly_dark",
@@ -686,7 +677,7 @@ with tab3:
         st.subheader("Clean Discipline Summary")
         st.dataframe(
             discipline_perf.rename(
-                columns={"AvgR": "Avg R-Multiple", "TotalPnL": "Total P&L"}
+                columns={"AvgR": "Avg R-Multiple", "ProcessScore": "Process Score"}
             ),
             use_container_width=True,
             hide_index=True,
@@ -694,7 +685,7 @@ with tab3:
     elif not df.empty:
         st.warning(
             "No current-structure trades are available for analytics yet. Add a new trade "
-            "with Risk Amount and Followed Plan filled in, or clean old rows in Google Sheets."
+            "with SL Price and Followed Plan filled in, or clean old rows in Google Sheets."
         )
     else:
         st.warning("Add some trades to see analytics!")
