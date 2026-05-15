@@ -378,36 +378,46 @@ tab1, tab2, tab3 = st.tabs(["New Trade", "Trade History", "Discipline Analytics"
 # ------------------- TAB 1: New Trade -------------------
 with tab1:
     st.header("Log New Trade")
+    if "trade_form_version" not in st.session_state:
+        st.session_state["trade_form_version"] = 0
+    if st.session_state.pop("trade_saved", False):
+        st.success("Trade saved successfully!")
+
+    form_version = st.session_state["trade_form_version"]
+    key_prefix = f"trade_{form_version}"
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        date = st.date_input("Date", datetime.now().date())
+        date = st.date_input("Date", datetime.now().date(), key=f"{key_prefix}_date")
         instrument = st.selectbox(
             "Instrument",
             ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "STOCK", "Other"],
+            key=f"{key_prefix}_instrument",
         )
-        strategy = st.text_input("Strategy (e.g., Bull Call Spread)")
-        pos_size = st.number_input("Position Size", min_value=1, value=1)
+        strategy = st.text_input("Strategy (e.g., Bull Call Spread)", key=f"{key_prefix}_strategy")
+        pos_size = st.number_input("Position Size", min_value=1, value=1, key=f"{key_prefix}_pos_size")
 
     with col2:
-        entry = st.number_input("Entry Price", format="%.2f", value=0.0)
-        exit_price = st.number_input("Exit Price", format="%.2f", value=0.0)
+        entry = st.number_input("Entry Price", format="%.2f", value=0.0, key=f"{key_prefix}_entry")
+        exit_price = st.number_input("Exit Price", format="%.2f", value=0.0, key=f"{key_prefix}_exit")
         exit_type = st.selectbox(
             "Exit Type",
             EXIT_TYPES,
+            key=f"{key_prefix}_exit_type",
         )
-        sl_price = st.number_input("SL Price", min_value=0.0, format="%.2f", value=0.0)
+        sl_price = st.number_input("SL Price", min_value=0.0, format="%.2f", value=0.0, key=f"{key_prefix}_sl_price")
 
-    setup_quality = st.slider("Setup Quality (1-5)", min_value=1, max_value=5, value=3)
-    execution_score = st.slider("Execution Score (1-5)", min_value=1, max_value=5, value=3)
-    followed = st.radio("Followed Plan?", PLAN_VALUES)
+    setup_quality = st.slider("Setup Quality (1-5)", min_value=1, max_value=5, value=3, key=f"{key_prefix}_setup_quality")
+    execution_score = st.slider("Execution Score (1-5)", min_value=1, max_value=5, value=3, key=f"{key_prefix}_execution_score")
+    followed = st.radio("Followed Plan?", PLAN_VALUES, key=f"{key_prefix}_followed")
     mistake_type = st.selectbox(
         "Mistake Type",
         MISTAKE_TYPES,
+        key=f"{key_prefix}_mistake_type",
     )
-    psychology_note = st.text_area("Psychology Note")
-    learning = st.text_area("Key Learning")
+    psychology_note = st.text_area("Psychology Note", key=f"{key_prefix}_psychology_note")
+    learning = st.text_area("Key Learning", key=f"{key_prefix}_learning")
 
     with col3:
         multiplier = 50 if "NIFTY" in instrument else 1
@@ -421,7 +431,7 @@ with tab1:
         st.metric("Process Score", f"{current_process_score:.2f}/5")
         st.caption("Risk = |Entry - SL Price| x position size. R-Multiple = P&L / risk.")
 
-    if st.button("Save Trade", type="primary", use_container_width=True):
+    if st.button("Save Trade", type="primary", use_container_width=True, key=f"{key_prefix}_save"):
         multiplier = 50 if "NIFTY" in instrument else 1
         risk_amount = abs(entry - sl_price) * pos_size * multiplier
         if risk_amount <= 0:
@@ -451,7 +461,8 @@ with tab1:
         }
 
         save_trade(trade)
-        st.success("Trade saved successfully!")
+        st.session_state["trade_saved"] = True
+        st.session_state["trade_form_version"] += 1
         st.rerun()
 
 
